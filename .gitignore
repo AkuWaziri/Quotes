@@ -6,3 +6,6 @@ venv/
 quotes-report.json
 .pytest_cache/
 .coverage
+quotes-downloads/
+*.slither-raw.json
+reports/

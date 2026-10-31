@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QUOTES defensive EVM smart-contract scanner MVP.
+"""QUOTES defensive EVM smart-contract scanner.
 
 Slither is the primary static-analysis engine when installed. Built-in source
 pattern checks are intentionally conservative and report leads, not confirmed
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -17,7 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.1.0"
+from source_retrieval import SourceRetrievalError, fetch_verified_source
+
+VERSION = "0.2.0"
 SOLIDITY_SUFFIXES = {".sol"}
 
 HEURISTICS: list[dict[str, Any]] = [
@@ -68,11 +71,13 @@ HEURISTICS: list[dict[str, Any]] = [
     },
 ]
 
+
 def solidity_files(target: Path) -> list[Path]:
     if target.is_file():
         return [target] if target.suffix.lower() in SOLIDITY_SUFFIXES else []
-    excluded = {".git", "node_modules", "lib", "vendor", ".venv", "venv", "out", "cache"}
+    excluded = {".git", "node_modules", "lib", "vendor", ".venv", "venv", "out", "cache", "quotes-downloads"}
     return sorted(p for p in target.rglob("*.sol") if not any(part in excluded for part in p.parts))
+
 
 def heuristic_scan(files: list[Path]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
@@ -101,6 +106,7 @@ def heuristic_scan(files: list[Path]) -> list[dict[str, Any]]:
                 })
     return findings
 
+
 def run_slither(target: Path, report_path: Path) -> dict[str, Any]:
     executable = shutil.which("slither")
     if not executable:
@@ -128,15 +134,39 @@ def run_slither(target: Path, report_path: Path) -> dict[str, Any]:
             status["parse_error"] = str(exc)
     return status
 
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="QUOTES smart-contract security scanner MVP")
-    parser.add_argument("--target", required=True, help="Solidity file or Hardhat/Foundry project directory")
+    parser = argparse.ArgumentParser(description="QUOTES smart-contract security scanner")
+    parser.add_argument("--target", help="Local Solidity file or Hardhat/Foundry project directory")
+    parser.add_argument("--address", help="Retrieve verified contract source from Etherscan API V2")
+    parser.add_argument("--chain-id", type=int, help="EVM chain ID for --address (for example, 1 for Ethereum)")
+    parser.add_argument("--source-dir", default="quotes-downloads", help="Directory for retrieved verified source")
+    parser.add_argument("--api-key", default=os.getenv("ETHERSCAN_API_KEY"), help="Etherscan API key; defaults to ETHERSCAN_API_KEY")
     parser.add_argument("--out", default="quotes-report.json", help="JSON report path (default: quotes-report.json)")
     parser.add_argument("--heuristics-only", action="store_true", help="Skip Slither and run built-in pattern checks only")
     args = parser.parse_args(argv)
 
-    target = Path(args.target).expanduser().resolve()
+    if bool(args.address) != (args.chain_id is not None):
+        parser.error("--address and --chain-id must be supplied together")
+    if args.address and args.target:
+        parser.error("choose either --target or --address, not both")
+    if not args.address and not args.target:
+        parser.error("provide --target for local scanning or --address with --chain-id for explorer retrieval")
+
     output = Path(args.out).expanduser().resolve()
+    source_metadata: dict[str, Any] | None = None
+    if args.address:
+        try:
+            source_metadata = fetch_verified_source(
+                args.address, args.chain_id, args.source_dir, api_key=args.api_key
+            )
+        except SourceRetrievalError as exc:
+            print(f"Error retrieving verified source: {exc}", file=sys.stderr)
+            return 1
+        target = Path(args.source_dir).expanduser().resolve()
+    else:
+        target = Path(args.target).expanduser().resolve()
+
     if not target.exists():
         print(f"Error: target does not exist: {target}", file=sys.stderr)
         return 1
@@ -150,13 +180,9 @@ def main(argv: list[str] | None = None) -> int:
 
     findings = heuristic_scan(files)
     slither_status: dict[str, Any] = {"available": False, "status": "skipped"}
-    # Slither can analyse a project root or a standalone file; avoid invoking it
-    # on a directory that contains no Solidity sources (checked above).
     if not args.heuristics_only:
         slither_report = output.with_suffix(".slither-raw.json")
         slither_status = run_slither(target, slither_report)
-        # Raw Slither findings are retained in the report without pretending
-        # they share the same schema as QUOTES heuristic findings.
         slither_report.unlink(missing_ok=True)
 
     report = {
@@ -164,13 +190,14 @@ def main(argv: list[str] | None = None) -> int:
         "version": VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "target": str(target),
+        "source": source_metadata,
         "solidity_files_scanned": len(files),
         "analysis": {
             "slither": slither_status,
             "heuristics": "completed",
             "limitations": [
                 "Pattern matches are leads for manual review, not confirmed vulnerabilities.",
-                "No bytecode retrieval, symbolic execution, fuzzing, fork simulation, or exploit validation is implemented in this MVP.",
+                "This version does not run bytecode analysis, symbolic execution, fuzzing, fork simulation, or exploit validation.",
                 "No findings does not mean a contract is secure.",
             ],
         },
@@ -195,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Slither: {slither_status.get('status')}")
     print(f"Report: {output}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
