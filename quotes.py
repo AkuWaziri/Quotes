@@ -18,13 +18,15 @@ from pathlib import Path
 from typing import Any
 
 from bytecode_analysis import BytecodeAnalysisError, analyze_runtime_bytecode
+from history import HistoryError, record_scan
+from html_report import write_html_report
 from source_retrieval import (
     SourceRetrievalError,
     fetch_runtime_bytecode,
     fetch_verified_source,
 )
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 SOLIDITY_SUFFIXES = {".sol"}
 
 HEURISTICS: list[dict[str, Any]] = [
@@ -147,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-dir", default="quotes-downloads", help="Directory for retrieved verified source")
     parser.add_argument("--api-key", default=os.getenv("ETHERSCAN_API_KEY"), help="Etherscan API key; defaults to ETHERSCAN_API_KEY")
     parser.add_argument("--out", default="quotes-report.json", help="JSON report path (default: quotes-report.json)")
+    parser.add_argument("--history-db", help="Optional SQLite path for scan history and repeat-finding detection")
+    parser.add_argument("--html-out", help="Optional path for a self-contained HTML report")
     parser.add_argument("--heuristics-only", action="store_true", help="Skip Slither and run built-in source checks only")
     args = parser.parse_args(argv)
 
@@ -262,12 +266,27 @@ def main(argv: list[str] | None = None) -> int:
             "slither_status": slither_status.get("status"),
         },
     }
+    if args.history_db:
+        try:
+            record_scan(report, args.history_db)
+        except HistoryError as exc:
+            report["history_error"] = str(exc)
+            print(f"Warning: {exc}", file=sys.stderr)
+
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     except OSError as exc:
         print(f"Error writing report: {exc}", file=sys.stderr)
         return 1
+
+    if args.html_out:
+        try:
+            html_path = write_html_report(report, args.html_out)
+            print(f"HTML report: {html_path}")
+        except OSError as exc:
+            print(f"Error writing HTML report: {exc}", file=sys.stderr)
+            return 1
 
     print(f"QUOTES {VERSION}: scanned {len(files)} Solidity file(s)")
     print(f"Source heuristic leads: {len(findings)}")
