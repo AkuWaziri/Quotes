@@ -11,6 +11,15 @@ QUOTES is an early-stage, defensive security scanner for EVM smart-contract code
 - Write machine-readable JSON results with severity, confidence, location and remediation notes.
 - Run tests in GitHub Actions.
 
+## Regression tests
+The test suite includes deliberately vulnerable and safe-control Solidity fixtures. It checks that the built-in heuristics flag expected patterns in the vulnerable fixture and ignore matching text that appears only in comments. These tests validate pattern behavior only; they do not prove exploitability or measure detection coverage across real-world contracts.
+
+Run the tests with:
+```bash
+pip install pytest
+python -m pytest -q
+```
+
 ## Requirements
 - Python 3.10+
 - Recommended: Slither and a compatible Solidity compiler for deeper static analysis. Slither's official setup and supported workflows are documented at https://github.com/crytic/slither.
