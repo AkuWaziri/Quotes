@@ -20,13 +20,14 @@ from typing import Any
 from bytecode_analysis import BytecodeAnalysisError, analyze_runtime_bytecode
 from history import HistoryError, record_scan
 from html_report import write_html_report
+from notification import NotificationError, send_notification
 from source_retrieval import (
     SourceRetrievalError,
     fetch_runtime_bytecode,
     fetch_verified_source,
 )
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 SOLIDITY_SUFFIXES = {".sol"}
 
 HEURISTICS: list[dict[str, Any]] = [
@@ -151,8 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="quotes-report.json", help="JSON report path (default: quotes-report.json)")
     parser.add_argument("--history-db", help="Optional SQLite path for scan history and repeat-finding detection")
     parser.add_argument("--html-out", help="Optional path for a self-contained HTML report")
+    parser.add_argument("--notify", action="store_true", help="Send a summary-only webhook notification")
+    parser.add_argument("--webhook-url", default=os.getenv("QUOTES_WEBHOOK_URL"), help="HTTPS webhook URL; defaults to QUOTES_WEBHOOK_URL")
     parser.add_argument("--heuristics-only", action="store_true", help="Skip Slither and run built-in source checks only")
     args = parser.parse_args(argv)
+    if args.notify and not args.webhook_url:
+        parser.error("--notify requires --webhook-url or QUOTES_WEBHOOK_URL")
 
     if bool(args.address) != (args.chain_id is not None):
         parser.error("--address and --chain-id must be supplied together")
@@ -272,6 +277,13 @@ def main(argv: list[str] | None = None) -> int:
         except HistoryError as exc:
             report["history_error"] = str(exc)
             print(f"Warning: {exc}", file=sys.stderr)
+
+    if args.notify:
+        try:
+            report["notification"] = send_notification(report, args.webhook_url)
+        except NotificationError as exc:
+            report["notification"] = {"status": "failed", "message": str(exc)}
+            print(f"Warning: notification failed: {exc}", file=sys.stderr)
 
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
