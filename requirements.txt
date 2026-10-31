@@ -1,3 +1,3 @@
-# The MVP intentionally uses the Python standard library.
-# Install Slither separately for deeper Solidity static analysis:
-# python -m pip install slither-analyzer
+# Runtime uses the Python standard library.
+# Test environment: python -m pip install -e ".[test]"
+# Optional deeper static analysis: python -m pip install -e ".[slither]"
