@@ -2,8 +2,7 @@
 """QUOTES defensive EVM smart-contract scanner.
 
 Slither is the primary static-analysis engine when installed. Built-in source
-pattern checks are intentionally conservative and report leads, not confirmed
-vulnerabilities.
+pattern and bytecode checks are conservative review leads, not audit findings.
 """
 from __future__ import annotations
 
@@ -18,9 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from source_retrieval import SourceRetrievalError, fetch_verified_source
+from bytecode_analysis import BytecodeAnalysisError, analyze_runtime_bytecode
+from source_retrieval import (
+    SourceRetrievalError,
+    fetch_runtime_bytecode,
+    fetch_verified_source,
+)
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SOLIDITY_SUFFIXES = {".sol"}
 
 HEURISTICS: list[dict[str, Any]] = [
@@ -138,12 +142,12 @@ def run_slither(target: Path, report_path: Path) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="QUOTES smart-contract security scanner")
     parser.add_argument("--target", help="Local Solidity file or Hardhat/Foundry project directory")
-    parser.add_argument("--address", help="Retrieve verified contract source from Etherscan API V2")
-    parser.add_argument("--chain-id", type=int, help="EVM chain ID for --address (for example, 1 for Ethereum)")
+    parser.add_argument("--address", help="EVM contract address to inspect")
+    parser.add_argument("--chain-id", type=int, help="EVM chain ID for --address")
     parser.add_argument("--source-dir", default="quotes-downloads", help="Directory for retrieved verified source")
     parser.add_argument("--api-key", default=os.getenv("ETHERSCAN_API_KEY"), help="Etherscan API key; defaults to ETHERSCAN_API_KEY")
     parser.add_argument("--out", default="quotes-report.json", help="JSON report path (default: quotes-report.json)")
-    parser.add_argument("--heuristics-only", action="store_true", help="Skip Slither and run built-in pattern checks only")
+    parser.add_argument("--heuristics-only", action="store_true", help="Skip Slither and run built-in source checks only")
     args = parser.parse_args(argv)
 
     if bool(args.address) != (args.chain_id is not None):
@@ -151,59 +155,107 @@ def main(argv: list[str] | None = None) -> int:
     if args.address and args.target:
         parser.error("choose either --target or --address, not both")
     if not args.address and not args.target:
-        parser.error("provide --target for local scanning or --address with --chain-id for explorer retrieval")
+        parser.error("provide --target for local scanning or --address with --chain-id for on-chain inspection")
 
     output = Path(args.out).expanduser().resolve()
     source_metadata: dict[str, Any] | None = None
+    source_error: str | None = None
+    bytecode_metadata: dict[str, Any] | None = None
+    bytecode_result: dict[str, Any] | None = None
+    bytecode_error: str | None = None
+
     if args.address:
+        # Isolate each address by chain to avoid stale source files from earlier scans.
+        source_target = (
+            Path(args.source_dir).expanduser().resolve()
+            / str(args.chain_id)
+            / args.address.lower()
+        )
         try:
             source_metadata = fetch_verified_source(
-                args.address, args.chain_id, args.source_dir, api_key=args.api_key
+                args.address, args.chain_id, source_target, api_key=args.api_key
             )
+            target: Path | None = source_target
         except SourceRetrievalError as exc:
-            print(f"Error retrieving verified source: {exc}", file=sys.stderr)
-            return 1
-        target = Path(args.source_dir).expanduser().resolve()
+            source_error = str(exc)
+            source_metadata = {
+                "provider": "etherscan-api-v2",
+                "chain_id": args.chain_id,
+                "address": args.address,
+                "verified_source": False,
+                "error": source_error,
+            }
+            target = None
+
+        try:
+            bytecode_metadata = fetch_runtime_bytecode(args.address, args.chain_id)
+            bytecode_result = analyze_runtime_bytecode(bytecode_metadata["bytecode"])
+            # Do not repeat the full bytecode in the JSON report; retain size and chain metadata.
+            bytecode_metadata = {k: v for k, v in bytecode_metadata.items() if k != "bytecode"}
+        except SourceRetrievalError as exc:
+            bytecode_error = str(exc)
+        except BytecodeAnalysisError as exc:
+            bytecode_error = str(exc)
     else:
         target = Path(args.target).expanduser().resolve()
 
-    if not target.exists():
-        print(f"Error: target does not exist: {target}", file=sys.stderr)
-        return 1
-    if not (target.is_file() or target.is_dir()):
-        print("Error: target must be a file or directory", file=sys.stderr)
-        return 1
-    files = solidity_files(target)
-    if not files:
-        print("Error: no Solidity (.sol) files found in target", file=sys.stderr)
+    files: list[Path] = []
+    if target is not None:
+        if not target.exists():
+            print(f"Error: target does not exist: {target}", file=sys.stderr)
+            return 1
+        if not (target.is_file() or target.is_dir()):
+            print("Error: target must be a file or directory", file=sys.stderr)
+            return 1
+        files = solidity_files(target)
+
+    if not files and bytecode_result is None:
+        if args.address:
+            print(
+                "Error: no verified Solidity source or runtime bytecode could be analysed. "
+                f"Source: {source_error or 'not available'}. Bytecode: {bytecode_error or 'not available'}.",
+                file=sys.stderr,
+            )
+        else:
+            print("Error: no Solidity (.sol) files found in target", file=sys.stderr)
         return 1
 
-    findings = heuristic_scan(files)
-    slither_status: dict[str, Any] = {"available": False, "status": "skipped"}
-    if not args.heuristics_only:
+    findings = heuristic_scan(files) if files else []
+    if files and not args.heuristics_only:
         slither_report = output.with_suffix(".slither-raw.json")
         slither_status = run_slither(target, slither_report)
         slither_report.unlink(missing_ok=True)
+    elif files:
+        slither_status = {"available": False, "status": "skipped"}
+    else:
+        slither_status = {"available": False, "status": "skipped_no_verified_source"}
 
     report = {
         "tool": "QUOTES",
         "version": VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "target": str(target),
+        "target": str(target) if target else None,
         "source": source_metadata,
+        "source_error": source_error,
+        "bytecode": bytecode_metadata,
+        "bytecode_error": bytecode_error,
         "solidity_files_scanned": len(files),
         "analysis": {
             "slither": slither_status,
-            "heuristics": "completed",
+            "heuristics": "completed" if files else "skipped_no_verified_source",
+            "bytecode": "completed" if bytecode_result else ("error" if bytecode_error else "skipped"),
             "limitations": [
-                "Pattern matches are leads for manual review, not confirmed vulnerabilities.",
-                "This version does not run bytecode analysis, symbolic execution, fuzzing, fork simulation, or exploit validation.",
+                "Source-pattern and opcode matches are leads for manual review, not confirmed vulnerabilities.",
+                "Bytecode opcode indicators are not control-flow analysis and do not establish reachability.",
+                "No symbolic execution, fuzzing, fork simulation, or exploit validation is implemented.",
                 "No findings does not mean a contract is secure.",
             ],
         },
         "heuristic_findings": findings,
+        "bytecode_analysis": bytecode_result,
         "summary": {
             "heuristic_finding_count": len(findings),
+            "bytecode_indicator_count": len(bytecode_result["indicators"]) if bytecode_result else 0,
             "high": sum(f["severity"] == "high" for f in findings),
             "medium": sum(f["severity"] == "medium" for f in findings),
             "low": sum(f["severity"] == "low" for f in findings),
@@ -218,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"QUOTES {VERSION}: scanned {len(files)} Solidity file(s)")
-    print(f"Heuristic leads: {len(findings)}")
+    print(f"Source heuristic leads: {len(findings)}")
+    print(f"Bytecode indicators: {report['summary']['bytecode_indicator_count']}")
     print(f"Slither: {slither_status.get('status')}")
     print(f"Report: {output}")
     return 0

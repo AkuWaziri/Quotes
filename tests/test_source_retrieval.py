@@ -124,3 +124,47 @@ def test_cli_scans_retrieved_source_and_records_metadata(monkeypatch, tmp_path):
     assert report["source"]["chain_id"] == 8453
     assert report["source"]["verified_source"] is True
     assert report["summary"]["heuristic_finding_count"] == 1
+
+
+def test_fetch_runtime_bytecode_checks_chain_and_reads_code(monkeypatch):
+    from io import BytesIO
+
+    responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": "0x2105"},
+        {"jsonrpc": "2.0", "id": 1, "result": "0x6000f4"},
+    ]
+    methods = []
+
+    def fake_urlopen(request, timeout):
+        body = json.loads(request.data.decode("utf-8"))
+        methods.append(body["method"])
+        return BytesIO(json.dumps(responses.pop(0)).encode("utf-8"))
+
+    monkeypatch.setattr(source, "urlopen", fake_urlopen)
+    result = source.fetch_runtime_bytecode(
+        "0x" + "c" * 40, 8453, rpc_url="https://rpc.example.test"
+    )
+    assert methods == ["eth_chainId", "eth_getCode"]
+    assert result["chain_id"] == 8453
+    assert result["runtime_bytecode_bytes"] == 3
+    assert result["bytecode"] == "0x6000f4"
+
+
+def test_fetch_runtime_bytecode_rejects_chain_mismatch(monkeypatch):
+    from io import BytesIO
+
+    def fake_urlopen(request, timeout):
+        return BytesIO(json.dumps({"jsonrpc": "2.0", "id": 1, "result": "0x1"}).encode("utf-8"))
+
+    monkeypatch.setattr(source, "urlopen", fake_urlopen)
+    with pytest.raises(source.SourceRetrievalError, match="chain mismatch"):
+        source.fetch_runtime_bytecode(
+            "0x" + "d" * 40, 8453, rpc_url="https://rpc.example.test"
+        )
+
+
+def test_fetch_runtime_bytecode_requires_secure_rpc_url():
+    with pytest.raises(source.SourceRetrievalError, match="HTTPS"):
+        source.fetch_runtime_bytecode(
+            "0x" + "e" * 40, 1, rpc_url="http://rpc.example.test"
+        )

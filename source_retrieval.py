@@ -145,3 +145,74 @@ def fetch_verified_source(
         "source_files": written,
         "verified_source": True,
     }
+
+
+def fetch_runtime_bytecode(
+    address: str,
+    chain_id: int,
+    rpc_url: str | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Read chain ID and deployed runtime bytecode from a JSON-RPC endpoint."""
+    from urllib.parse import urlsplit
+
+    if not ADDRESS_RE.fullmatch(address):
+        raise SourceRetrievalError("Address must be a 20-byte EVM address (0x + 40 hex characters).")
+    if isinstance(chain_id, bool) or not isinstance(chain_id, int) or chain_id <= 0:
+        raise SourceRetrievalError("Chain ID must be a positive integer.")
+    endpoint = rpc_url or os.getenv("QUOTES_RPC_URL")
+    if not endpoint:
+        raise SourceRetrievalError("QUOTES_RPC_URL is missing; set an RPC endpoint for the target chain.")
+    parsed = urlsplit(endpoint)
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in local_hosts):
+        raise SourceRetrievalError("RPC URL must use HTTPS (HTTP is allowed only for loopback development endpoints).")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise SourceRetrievalError("RPC URL must include a host and must not embed credentials.")
+
+    def rpc(method: str, params: list[Any]) -> Any:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
+        request = Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            raise SourceRetrievalError(f"RPC request failed: {exc}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SourceRetrievalError(f"RPC returned invalid JSON: {exc}") from exc
+        if not isinstance(payload, dict) or payload.get("error"):
+            detail = payload.get("error") if isinstance(payload, dict) else "invalid response"
+            raise SourceRetrievalError(f"RPC {method} failed: {detail}")
+        if "result" not in payload:
+            raise SourceRetrievalError(f"RPC {method} response has no result.")
+        return payload["result"]
+
+    reported_chain = rpc("eth_chainId", [])
+    try:
+        actual_chain_id = int(reported_chain, 16) if isinstance(reported_chain, str) else int(reported_chain)
+    except (TypeError, ValueError) as exc:
+        raise SourceRetrievalError("RPC returned an invalid chain ID.") from exc
+    if actual_chain_id != chain_id:
+        raise SourceRetrievalError(
+            f"RPC chain mismatch: configured chain ID {chain_id}, endpoint reports {actual_chain_id}."
+        )
+
+    code = rpc("eth_getCode", [address, "latest"])
+    if not isinstance(code, str) or not code.startswith("0x") or len(code) <= 2:
+        raise SourceRetrievalError("No deployed runtime bytecode was returned for this address.")
+    hex_code = code[2:]
+    if not re.fullmatch(r"[0-9a-fA-F]+", hex_code) or len(hex_code) % 2:
+        raise SourceRetrievalError("RPC returned malformed runtime bytecode.")
+    return {
+        "provider": "json-rpc",
+        "chain_id": actual_chain_id,
+        "address": address,
+        "bytecode": code,
+        "runtime_bytecode_bytes": len(hex_code) // 2,
+        "retrieval": "read_only",
+    }
