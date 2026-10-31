@@ -1,18 +1,21 @@
 # QUOTES — Smart Contract Security Scanner
 
-QUOTES is an early-stage, defensive scanner for EVM smart-contract source. It combines five lightweight source heuristics with optional Slither static analysis and emits a JSON report. It can also retrieve verified source and metadata from Etherscan API V2.
+QUOTES is an early-stage, defensive EVM contract scanner. It combines five Solidity source heuristics, optional Slither static analysis, and a conservative runtime-bytecode opcode pass. It can retrieve verified source from Etherscan API V2 and read deployed runtime bytecode from a JSON-RPC endpoint.
 
-> **Status:** early-stage scanner, not an audit. Heuristic matches are leads for manual review, not confirmed vulnerabilities. A clean result does not establish that a contract is secure.
+> **Status:** scanner, not an audit. Source-pattern and opcode matches are review leads, not confirmed vulnerabilities. A clean result does not establish that a contract is secure.
 
 ## Current features
 
-- Scan a local Solidity file or Hardhat/Foundry project.
-- Retrieve verified source files and contract metadata from Etherscan API V2.
-- Reject unverified source and unsafe source paths before writing files.
-- Run Slither when installed; keep source heuristics available if Slither is absent.
-- Produce JSON output with findings, confidence, severity, recommendations, source metadata, and tool status.
-- Regression tests for vulnerable patterns, comment-only controls, explorer source parsing, path traversal, and CLI behavior.
-- GitHub Actions test matrix for Python 3.10–3.13.
+- Scan local Solidity files and Hardhat/Foundry projects.
+- Retrieve verified source and compiler/proxy metadata from Etherscan API V2.
+- Retrieve deployed runtime bytecode using read-only JSON-RPC calls.
+- Check that the RPC endpoint's reported chain ID matches the requested chain before reading bytecode.
+- Disassemble EVM opcodes while skipping PUSH immediate data, reducing false positives from bytes that are not executed as opcodes.
+- Flag ORIGIN, DELEGATECALL, SELFDESTRUCT, TIMESTAMP, and CALL-family opcodes as low-confidence review indicators.
+- Recognize the standard EIP-1167 minimal proxy runtime pattern.
+- Analyse bytecode even when verified source is unavailable.
+- Optional Slither analysis for source-enabled scans.
+- JSON reports, path-safe source retrieval, regression tests, and GitHub Actions on Python 3.10–3.13.
 
 ## Environment setup
 
@@ -29,7 +32,7 @@ python -m pip install -e ".[test]"
 python -m pytest -q
 ```
 
-If PowerShell blocks activation, run `.\.venv\Scripts\python.exe -m pytest -q` or use Command Prompt activation instead.
+If PowerShell blocks activation, run `.\.venv\Scripts\python.exe -m pytest -q` or use Command Prompt activation.
 
 ### macOS / Linux
 ```bash
@@ -43,60 +46,63 @@ python -m pytest -q
 ```
 
 ### Optional Slither
-Slither is optional; local heuristic checks still run without it.
 ```bash
 python -m pip install -e ".[slither]"
 slither --version
 ```
-For projects that require a specific compiler, install and configure that Solidity compiler and project dependencies separately. Slither may need a compatible compiler and project configuration.
+Slither may require a compatible Solidity compiler and the target project's dependencies/configuration.
 
 ## Scan local source
 
-Single Solidity file:
 ```bash
-python quotes.py --target path/to/Contract.sol --out quotes-report.json
+python quotes.py --target path/to/Contract.sol --out reports/contract.json
 ```
 
-Hardhat or Foundry project:
+For a Hardhat/Foundry project:
 ```bash
-python quotes.py --target . --out quotes-report.json
+python quotes.py --target . --out reports/project.json
 ```
 
-Skip Slither and run only built-in heuristics:
+Run only the built-in source checks:
 ```bash
 python quotes.py --target path/to/Contract.sol --heuristics-only
 ```
 
-## Retrieve and scan verified source
+## Scan a deployed contract by address
 
-Create an API key at Etherscan and set it as an environment variable. Never commit a real key or paste it into source code.
+Set an RPC endpoint for the target chain. Use HTTPS for remote endpoints; HTTP is allowed only for loopback development endpoints. QUOTES calls `eth_chainId` and refuses to read bytecode if the endpoint reports a different chain ID.
 
 Windows PowerShell:
 ```powershell
+$env:QUOTES_RPC_URL = "https://YOUR_CHAIN_RPC_ENDPOINT"
 $env:ETHERSCAN_API_KEY = "YOUR_ETHERSCAN_API_KEY"
-python quotes.py --address 0xYourContractAddress --chain-id 1 --out reports/contract.json --heuristics-only
+python quotes.py --address 0xYourContractAddress --chain-id 8453 --out reports/contract.json
 ```
 
 macOS / Linux:
 ```bash
+export QUOTES_RPC_URL="https://YOUR_CHAIN_RPC_ENDPOINT"
 export ETHERSCAN_API_KEY="YOUR_ETHERSCAN_API_KEY"
-python quotes.py --address 0xYourContractAddress --chain-id 1 --out reports/contract.json --heuristics-only
+python quotes.py --address 0xYourContractAddress --chain-id 8453 --out reports/contract.json
 ```
 
-Replace chain ID `1` with the chain ID for the contract. Etherscan API V2 supports multiple EVM networks through its `chainid` parameter; the selected network must be supported by Etherscan. The command downloads verified source into `quotes-downloads/` by default. To choose another directory, pass `--source-dir path/to/downloads`. The JSON report records chain ID, address, contract name, compiler metadata, proxy metadata, and downloaded source paths.
+Replace `8453` with the actual chain ID. `QUOTES_RPC_URL` is required for on-chain bytecode analysis. `ETHERSCAN_API_KEY` is required for verified source retrieval; if source is unverified or the explorer request fails, the scanner can still produce a bytecode-only report when RPC access succeeds. Retrieved Solidity files are written to `quotes-downloads/` by default; use `--source-dir` to change that directory.
 
-The retrieval feature is read-only. It does not call contract functions or submit transactions. Source verification by an explorer confirms publication/matching metadata, not that the contract is safe.
+The address workflow is read-only. It does not submit transactions, call contract methods, or attempt to exploit the target. Do not place API keys directly in source files or commit a real `.env` file.
 
-## Output and exit codes
+## Report contents
 
-The JSON report includes scan timestamp, target, verified-source metadata (when applicable), Solidity file count, Slither status, heuristic findings, and summary counts.
+Reports include chain/address metadata, source retrieval status, Solidity file count, Slither status, heuristic findings, bytecode size and SHA-256 fingerprint, opcode counts, minimal-proxy detection, bytecode indicators, and summary counts. Raw bytecode is not copied into the report.
 
-- `0`: scan completed and report written.
-- `1`: invalid target, no Solidity files, explorer failure, or report write failure.
-- `2`: invalid command-line arguments.
+- Exit code `0`: at least source or bytecode analysis completed and the report was written.
+- Exit code `1`: invalid target, no analysable source/bytecode, retrieval failure, or report write failure.
+- Exit code `2`: invalid command-line arguments.
 
-A heuristic finding does not change the exit code. The scanner currently does not implement bytecode analysis, symbolic execution, fuzzing, fork simulation, historical finding storage, notifications, or a dashboard. These are future modules and should be added behind tests without changing working scan behavior.
+## Current limitations
 
-## Safety and limitations
+- Bytecode indicators are not control-flow analysis and do not prove an opcode is reachable.
+- The minimal-proxy recognizer covers the common EIP-1167 runtime pattern; other proxy implementations need separate analysis.
+- No symbolic execution, fuzzing, fork simulation, exploit validation, historical finding database, notifications, or dashboard is implemented yet.
+- Source heuristics are not a Solidity parser. Slither is recommended for deeper source analysis.
 
-Only scan contracts you are authorized to assess. Use local tests or isolated forks for validation; do not attempt to exploit or alter live contracts. Do not upload secrets, private keys, or production credentials into scan targets. Review findings manually and use independent audit processes for consequential deployments.
+Only scan contracts you are authorized to assess. Validate behavior with tests and isolated forks; do not attempt to exploit or alter live contracts.
