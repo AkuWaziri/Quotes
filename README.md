@@ -1,6 +1,6 @@
 # QUOTES — Smart Contract Security Scanner
 
-QUOTES is an early-stage, defensive EVM contract scanner. It combines five Solidity source heuristics, optional Slither static analysis, and a conservative runtime-bytecode opcode pass. It can retrieve verified source from Etherscan API V2 and read deployed runtime bytecode from a JSON-RPC endpoint.
+QUOTES is an early-stage, defensive EVM contract scanner. It combines Solidity source heuristics, optional Slither static analysis, conservative runtime-bytecode inspection, optional SQLite scan history, and a self-contained HTML report.
 
 > **Status:** scanner, not an audit. Source-pattern and opcode matches are review leads, not confirmed vulnerabilities. A clean result does not establish that a contract is secure.
 
@@ -8,14 +8,15 @@ QUOTES is an early-stage, defensive EVM contract scanner. It combines five Solid
 
 - Scan local Solidity files and Hardhat/Foundry projects.
 - Retrieve verified source and compiler/proxy metadata from Etherscan API V2.
-- Retrieve deployed runtime bytecode using read-only JSON-RPC calls.
-- Check that the RPC endpoint's reported chain ID matches the requested chain before reading bytecode.
-- Disassemble EVM opcodes while skipping PUSH immediate data, reducing false positives from bytes that are not executed as opcodes.
+- Read deployed runtime bytecode through read-only JSON-RPC and verify the endpoint's chain ID.
+- Disassemble EVM opcodes while skipping PUSH immediate data.
 - Flag ORIGIN, DELEGATECALL, SELFDESTRUCT, TIMESTAMP, and CALL-family opcodes as low-confidence review indicators.
-- Recognize the standard EIP-1167 minimal proxy runtime pattern.
-- Analyse bytecode even when verified source is unavailable.
-- Optional Slither analysis for source-enabled scans.
-- JSON reports, path-safe source retrieval, regression tests, and GitHub Actions on Python 3.10–3.13.
+- Recognize the standard EIP-1167 minimal-proxy runtime pattern.
+- Produce bytecode-only reports when source is unverified or unavailable.
+- Run Slither when installed.
+- Optionally store scan history in SQLite and mark findings as new or repeated per target.
+- Optionally create a self-contained HTML report with escaped finding text.
+- Run regression tests in GitHub Actions on Python 3.10–3.13.
 
 ## Environment setup
 
@@ -63,7 +64,7 @@ For a Hardhat/Foundry project:
 python quotes.py --target . --out reports/project.json
 ```
 
-Run only the built-in source checks:
+Skip Slither and run only the built-in source checks (address scans still include bytecode inspection):
 ```bash
 python quotes.py --target path/to/Contract.sol --heuristics-only
 ```
@@ -86,13 +87,33 @@ export ETHERSCAN_API_KEY="YOUR_ETHERSCAN_API_KEY"
 python quotes.py --address 0xYourContractAddress --chain-id 8453 --out reports/contract.json
 ```
 
-Replace `8453` with the actual chain ID. `QUOTES_RPC_URL` is required for on-chain bytecode analysis. `ETHERSCAN_API_KEY` is required for verified source retrieval; if source is unverified or the explorer request fails, the scanner can still produce a bytecode-only report when RPC access succeeds. Retrieved Solidity files are written under `quotes-downloads/<chain-id>/<lowercase-address>/` by default, keeping each contract isolated from previous scans. Use `--source-dir` to change the root directory.
+Replace `8453` with the actual chain ID. `QUOTES_RPC_URL` is required for on-chain bytecode analysis. `ETHERSCAN_API_KEY` is required for verified source retrieval; if source is unverified or the explorer request fails, the scanner can still produce a bytecode-only report when RPC access succeeds. Retrieved Solidity files are written under `quotes-downloads/<chain-id>/<lowercase-address>/` by default; use `--source-dir` to change the root.
 
-The address workflow is read-only. It does not submit transactions, call contract methods, or attempt to exploit the target. Do not place API keys directly in source files or commit a real `.env` file.
+## Optional scan history
 
-## Report contents
+History is opt-in and does not change default scan behavior:
+```bash
+python quotes.py --target path/to/Contract.sol --history-db quotes-history.sqlite3 --out reports/contract.json
+```
 
-Reports include chain/address metadata, source retrieval status, Solidity file count, Slither status, heuristic findings, bytecode size and SHA-256 fingerprint, opcode counts, minimal-proxy detection, bytecode indicators, and summary counts. Raw bytecode is not copied into the report.
+Repeated findings are fingerprinted per target and marked `new` or `repeat` in the report. The SQLite database stays local. Keep it out of source control if it contains private project paths or assessment details.
+
+## Optional HTML report
+
+```bash
+python quotes.py --target path/to/Contract.sol --out reports/contract.json --html-out reports/contract.html
+```
+
+The HTML file is self-contained and escapes finding text before rendering. It can be opened locally in a browser and shared as a static report. Do not share reports containing private contract paths or sensitive assessment details without reviewing them first.
+
+History and HTML can be combined:
+```bash
+python quotes.py --target path/to/Contract.sol --history-db quotes-history.sqlite3 --out reports/contract.json --html-out reports/contract.html
+```
+
+## Report contents and exit codes
+
+Reports include target metadata, source retrieval status, Solidity file count, Slither status, source findings, bytecode size and SHA-256 fingerprint, opcode indicators, and summary counts. When enabled, reports also include a history scan ID and new/repeat counts.
 
 - Exit code `0`: at least source or bytecode analysis completed and the report was written.
 - Exit code `1`: invalid target, no analysable source/bytecode, retrieval failure, or report write failure.
@@ -102,7 +123,7 @@ Reports include chain/address metadata, source retrieval status, Solidity file c
 
 - Bytecode indicators are not control-flow analysis and do not prove an opcode is reachable.
 - The minimal-proxy recognizer covers the common EIP-1167 runtime pattern; other proxy implementations need separate analysis.
-- No symbolic execution, fuzzing, fork simulation, exploit validation, historical finding database, notifications, or dashboard is implemented yet.
+- No symbolic execution, fuzzing, fork simulation, exploit validation, notifications, or interactive web dashboard is implemented yet.
 - Source heuristics are not a Solidity parser. Slither is recommended for deeper source analysis.
 
 Only scan contracts you are authorized to assess. Validate behavior with tests and isolated forks; do not attempt to exploit or alter live contracts.
