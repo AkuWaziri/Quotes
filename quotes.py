@@ -165,11 +165,17 @@ def main(argv: list[str] | None = None) -> int:
     bytecode_error: str | None = None
 
     if args.address:
+        # Isolate each address by chain to avoid stale source files from earlier scans.
+        source_target = (
+            Path(args.source_dir).expanduser().resolve()
+            / str(args.chain_id)
+            / args.address.lower()
+        )
         try:
             source_metadata = fetch_verified_source(
-                args.address, args.chain_id, args.source_dir, api_key=args.api_key
+                args.address, args.chain_id, source_target, api_key=args.api_key
             )
-            target: Path | None = Path(args.source_dir).expanduser().resolve()
+            target: Path | None = source_target
         except SourceRetrievalError as exc:
             source_error = str(exc)
             source_metadata = {
