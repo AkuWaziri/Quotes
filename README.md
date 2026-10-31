@@ -86,7 +86,7 @@ export ETHERSCAN_API_KEY="YOUR_ETHERSCAN_API_KEY"
 python quotes.py --address 0xYourContractAddress --chain-id 8453 --out reports/contract.json
 ```
 
-Replace `8453` with the actual chain ID. `QUOTES_RPC_URL` is required for on-chain bytecode analysis. `ETHERSCAN_API_KEY` is required for verified source retrieval; if source is unverified or the explorer request fails, the scanner can still produce a bytecode-only report when RPC access succeeds. Retrieved Solidity files are written to `quotes-downloads/` by default; use `--source-dir` to change that directory.
+Replace `8453` with the actual chain ID. `QUOTES_RPC_URL` is required for on-chain bytecode analysis. `ETHERSCAN_API_KEY` is required for verified source retrieval; if source is unverified or the explorer request fails, the scanner can still produce a bytecode-only report when RPC access succeeds. Retrieved Solidity files are written under `quotes-downloads/<chain-id>/<lowercase-address>/` by default, keeping each contract isolated from previous scans. Use `--source-dir` to change the root directory.
 
 The address workflow is read-only. It does not submit transactions, call contract methods, or attempt to exploit the target. Do not place API keys directly in source files or commit a real `.env` file.
 
