@@ -58,9 +58,11 @@ def disassemble_opcodes(bytecode: str) -> list[str]:
     while pc < len(raw):
         opcode = raw[pc]
         pc += 1
-        opcodes.append(_OPCODE_NAMES.get(opcode, f"UNKNOWN_0x{opcode:02x}"))
         if 0x60 <= opcode <= 0x7F:
+            opcodes.append(f"PUSH{opcode - 0x5F}")
             pc += opcode - 0x5F
+        else:
+            opcodes.append(_OPCODE_NAMES.get(opcode, f"UNKNOWN_0x{opcode:02x}"))
     return opcodes
 
 
