@@ -16,6 +16,7 @@ QUOTES is an early-stage, defensive EVM contract scanner. It combines Solidity s
 - Run Slither when installed.
 - Optionally store scan history in SQLite and mark findings as new or repeated per target.
 - Optionally create a self-contained HTML report with escaped finding text.
+- Optionally send a summary-only notification to a Slack/Discord-compatible HTTPS webhook.
 - Run regression tests in GitHub Actions on Python 3.10–3.13.
 
 ## Environment setup
@@ -106,6 +107,24 @@ python quotes.py --target path/to/Contract.sol --out reports/contract.json --htm
 
 The HTML file is self-contained and escapes finding text before rendering. It can be opened locally in a browser and shared as a static report. Do not share reports containing private contract paths or sensitive assessment details without reviewing them first.
 
+## Optional webhook notifications
+
+Notifications are disabled unless you explicitly pass `--notify`. Configure a Slack or Discord-compatible incoming HTTPS webhook in `QUOTES_WEBHOOK_URL`, or pass `--webhook-url` directly. The message contains only scanner version and finding counts; it does not send source code, bytecode, or the full report.
+
+PowerShell:
+```powershell
+$env:QUOTES_WEBHOOK_URL = "https://YOUR_WEBHOOK_URL"
+python quotes.py --target path/to/Contract.sol --notify --out reports/contract.json
+```
+
+macOS / Linux:
+```bash
+export QUOTES_WEBHOOK_URL="https://YOUR_WEBHOOK_URL"
+python quotes.py --target path/to/Contract.sol --notify --out reports/contract.json
+```
+
+Treat the webhook URL as a secret. QUOTES refuses non-HTTPS remote webhook URLs. A delivery failure is recorded in the report and does not discard completed scan results.
+
 History and HTML can be combined:
 ```bash
 python quotes.py --target path/to/Contract.sol --history-db quotes-history.sqlite3 --out reports/contract.json --html-out reports/contract.html
@@ -123,7 +142,7 @@ Reports include target metadata, source retrieval status, Solidity file count, S
 
 - Bytecode indicators are not control-flow analysis and do not prove an opcode is reachable.
 - The minimal-proxy recognizer covers the common EIP-1167 runtime pattern; other proxy implementations need separate analysis.
-- No symbolic execution, fuzzing, fork simulation, exploit validation, notifications, or interactive web dashboard is implemented yet.
+- No symbolic execution, fuzzing, fork simulation, exploit validation, or interactive web dashboard is implemented yet.
 - Source heuristics are not a Solidity parser. Slither is recommended for deeper source analysis.
 
 Only scan contracts you are authorized to assess. Validate behavior with tests and isolated forks; do not attempt to exploit or alter live contracts.
