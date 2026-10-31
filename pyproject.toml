@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quotes-contract-scanner"
-version = "0.4.0"
+version = "0.5.0"
 description = "Defensive static analysis helpers for EVM smart contracts"
 requires-python = ">=3.10"
 dependencies = []
@@ -14,7 +14,7 @@ test = ["pytest>=8,<9"]
 slither = ["slither-analyzer>=0.10"]
 
 [tool.setuptools]
-py-modules = ["quotes", "source_retrieval", "bytecode_analysis", "history", "html_report"]
+py-modules = ["quotes", "source_retrieval", "bytecode_analysis", "history", "html_report", "notification"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
